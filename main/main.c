@@ -1,20 +1,122 @@
-#include "freertos/FreeRTOS.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <lwip/sockets.h>
+#include <esp_log.h>
+#include <string.h>
+#include <errno.h>
+#include "sdkconfig.h"
 #include "esp_wifi.h"
 #include "esp_system.h"
 #include "esp_event.h"
 #include "esp_event_loop.h"
+#include "stdio.h" //printf
+#include "stdlib.h" //exit(0);
+#include "arpa/inet.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
 
-#include "stdio.h" //printf
-#include "string.h" //memset
-#include "stdlib.h" //exit(0);
-#include "arpa/inet.h"
-#include "lwip/sockets.h"
 
-#define BUFLEN 512  //Max length of buffer
-#define PORT 8888   //The port on which to listen for incoming data
+#define PORT_NUMBER 8001
 
+#define BLINK_GPIO GPIO_NUM_4
+
+static char tag[] = "socket_server";
+
+/**
+ * Create a listening socket.  We then wait for a client to connect.
+ * Once a client has connected, we then read until there is no more data
+ * and log the data read.  We then close the client socket and start
+ * waiting for a new connection.
+ */
+void socket_server(void *ignore) {
+    struct sockaddr_in clientAddress;
+    struct sockaddr_in serverAddress;
+
+    // Create a socket that we will listen upon.
+    int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock < 0) {
+        ESP_LOGE(tag, "socket: %d %s", sock, strerror(errno));
+        goto END;
+    }
+
+    // Bind our server socket to a port.
+    serverAddress.sin_family = AF_INET;
+    serverAddress.sin_addr.s_addr = htonl(INADDR_ANY);
+    serverAddress.sin_port = htons(PORT_NUMBER);
+    int rc  = bind(sock, (struct sockaddr *)&serverAddress, sizeof(serverAddress));
+    if (rc < 0) {
+        ESP_LOGE(tag, "bind: %d %s", rc, strerror(errno));
+        goto END;
+    }
+
+    // Flag the socket as listening for new connections.
+    rc = listen(sock, 5); //5 concurrent connections
+    if (rc < 0) {
+        ESP_LOGE(tag, "listen: %d %s", rc, strerror(errno));
+        goto END;
+    }
+
+    while (1) {
+        // Listen for a new client connection.
+        socklen_t clientAddressLength = sizeof(clientAddress);
+        int clientSock = accept(sock, (struct sockaddr *)&clientAddress, &clientAddressLength);
+        if (clientSock < 0) {
+            ESP_LOGE(tag, "accept: %d %s", clientSock, strerror(errno));
+            goto END;
+        }
+
+        // We now have a new client ...
+        int total = 10*1024; //bytes 10*1024
+        int sizeUsed = 0;
+        char *data = malloc(total);
+
+        // Loop reading data.
+        while(1) {
+            ssize_t sizeRead = recv(clientSock, data + sizeUsed, total-sizeUsed, 0);
+            if (sizeRead < 0) {
+                ESP_LOGE(tag, "recv: %d %s", sizeRead, strerror(errno));
+                goto END;
+            }
+            if (sizeRead == 0) { // need to send a ctrl+d in terminal (eof)
+                //debug with: nc IPADDR PORT
+                break;
+            }
+            sizeUsed += sizeRead;
+        }
+
+        // Finished reading data.
+        ESP_LOGD(tag, "Data read (size: %d) was: %.*s", sizeUsed, sizeUsed, data);
+
+        //send back the data
+        int sock = clientSock;
+        char msg[] = "";
+
+        if (strcmp(data,"on") == 0) {
+            strcpy(msg, "LED is now on");
+            gpio_set_level(BLINK_GPIO, 1);
+        } else if (strcmp(data,"off") == 0) {
+            strcpy(msg, "LED is now off");
+            gpio_set_level(BLINK_GPIO, 0);
+        }else {
+            strcpy(msg, "Got dummy text");
+        }
+
+
+        //socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        send(sock, msg, strlen(msg), 0);
+        //ESP_LOGD(tag, "send: rc: %d", rc);
+
+        //close outgoing socket
+        //rc = close(sock);
+        //ESP_LOGD(tag, "close: rc: %d", rc);
+
+        //close incoming socket
+        free(data);
+        close(clientSock);
+    }
+    END:
+    vTaskDelete(NULL);
+}
 
 esp_err_t event_handler(void *ctx, system_event_t *event)
 {
@@ -27,11 +129,12 @@ void die(char *s)
     exit(1);
 }
 
-void app_main(void)
+void app_main()
 {
+
     nvs_flash_init();
     tcpip_adapter_init();
-    int level = 0;
+    //int level = 0;
     ESP_ERROR_CHECK( esp_event_loop_init(event_handler, NULL) );
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK( esp_wifi_init(&cfg) );
@@ -40,88 +143,30 @@ void app_main(void)
     wifi_config_t ap_config = {
         .ap = {
             .ssid = "KEFE",
-	    .ssid_len = 0,
+        .ssid_len = 0,
             .password = "jelszo123",
-	    .channel = 1,
-	    .authmode = WIFI_AUTH_WPA2_PSK,
-	    .beacon_interval = 400,
-	    .max_connection = 16,
+        .channel = 1,
+        .authmode = WIFI_AUTH_WPA2_PSK,
+        .beacon_interval = 400,
+        .max_connection = 16,
         }
     };
     ESP_ERROR_CHECK( esp_wifi_set_config(WIFI_IF_AP, &ap_config) );
     ESP_ERROR_CHECK( esp_wifi_start() );
-    gpio_set_direction(GPIO_NUM_4, GPIO_MODE_OUTPUT);
 
-    //gpio_set_direction(GPIO_NUM_4, GPIO_MODE_OUTPUT);
-    //int level = 0;
-    //while (true) {
-    //    gpio_set_level(GPIO_NUM_4, level);
-    //    level = !level;
-    //    vTaskDelay(300 / portTICK_PERIOD_MS);
-    //}
-
-
-	//lets begin with UDP server
-
-    void udp_server () {
-    struct sockaddr_in si_me, si_other;
-     
-    int s, slen = sizeof(si_other) , recv_len;
-    char buf[BUFLEN];
-     
-    //create a UDP socket
-    if ((s=socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1)
-    {
-        die("socket");
-    }
-     
-    // zero out the structure
-    memset((char *) &si_me, 0, sizeof(si_me));
-     
-    si_me.sin_family = AF_INET;
-    si_me.sin_port = htons(PORT);
-    si_me.sin_addr.s_addr = htonl(INADDR_ANY);
-     
-    //bind socket to port
-    if( bind(s , (struct sockaddr*)&si_me, sizeof(si_me) ) == -1)
-    {
-        die("bind");
-    }
-     
-    //keep listening for data
-    while(1)
-    {
-        printf("Waiting for data...");
-        fflush(stdout);
-         
-        //try to receive some data, this is a blocking call
-        if ((recv_len = lwip_recvfrom(s, buf, BUFLEN, 0, (struct sockaddr *) &si_other, slen)) == -1)
-        {
-            die("lwip_recvfrom()");
-        }
-         
-        //print details of the client/peer and the data received
-        printf("Received packet from %s:%d\n", inet_ntoa(si_other.sin_addr), ntohs(si_other.sin_port));
-        printf("Data: %s\n" , buf);
-
-        if ( strcmp( buf, "test") == 0 ) {
-            gpio_set_level(GPIO_NUM_4, level);
-            level = !level;
-        }
-         
-        //now reply the client with the same data
-        if (sendto(s, buf, recv_len, 0, (struct sockaddr*) &si_other, slen) == -1)
-        {
-            die("sendto()");
-        }
-    }
- 
-    close(s);
-    }
+     /* Configure the IOMUX register for pad BLINK_GPIO (some pads are
+       muxed to GPIO on reset already, but some default to other
+       functions and need to be switched to GPIO. Consult the
+       Technical Reference for a list of pads and their default
+       functions.)
+    */
+    gpio_pad_select_gpio(BLINK_GPIO);
+    /* Set the GPIO as a push/pull output */
+    gpio_set_direction(BLINK_GPIO, GPIO_MODE_OUTPUT);
 
 
-
-
+    xTaskCreate(&socket_server, "socket_server", 2048, NULL, 5, NULL);
+    //socket_server("test");
 
 }
 
