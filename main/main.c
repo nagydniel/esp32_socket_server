@@ -16,7 +16,7 @@
 #include "driver/gpio.h"
 
 
-#define PORT_NUMBER 8001
+#define PORT_NUMBER 2016
 
 #define BLINK_GPIO GPIO_NUM_4
 
@@ -62,39 +62,56 @@ void socket_server(void *ignore) {
         int clientSock = accept(sock, (struct sockaddr *)&clientAddress, &clientAddressLength);
         if (clientSock < 0) {
             ESP_LOGE(tag, "accept: %d %s", clientSock, strerror(errno));
+            printf("accept: %d %s", clientSock, strerror(errno));
             goto END;
         }
 
         // We now have a new client ...
-        int total = 10*1024; //bytes 10*1024
+        int total = 4; //bytes 10*1024 // we send 4 chars for now
         int sizeUsed = 0;
         char *data = malloc(total);
+        char buffer[256];
+        int n;
+
+        bzero(buffer,256);
+        n = read(clientSock,buffer,255);
+
+        if (n < 0) printf("ERROR reading from socket");
+        printf("Here is the message: %s\n",buffer);
 
         // Loop reading data.
-        while(1) {
+     /*   while(1) {
             ssize_t sizeRead = recv(clientSock, data + sizeUsed, total-sizeUsed, 0);
             if (sizeRead < 0) {
                 ESP_LOGE(tag, "recv: %d %s", sizeRead, strerror(errno));
+                printf("recv: %d %s", sizeRead, strerror(errno));
                 goto END;
             }
             if (sizeRead == 0) { // need to send a ctrl+d in terminal (eof)
                 //debug with: nc IPADDR PORT
+                printf("sizeread=0\n");
+                break;
+            } else if (sizeUsed == 4) {
+                printf("sizeused=4\n");
                 break;
             }
             sizeUsed += sizeRead;
         }
+        */
 
         // Finished reading data.
-        ESP_LOGD(tag, "Data read (size: %d) was: %.*s", sizeUsed, sizeUsed, data);
+      //  ESP_LOGD(tag, "Data read (size: %d) was: %.*s", sizeUsed, sizeUsed, data);
+       // printf("Data read (size: %d) was: %.*s", sizeUsed, sizeUsed, data);
 
         //send back the data
         int sock = clientSock;
         char msg[] = "";
 
-        if (strcmp(data,"on") == 0) {
+
+        if (strncmp(buffer,"ONON",2) == 0) {
             strcpy(msg, "LED is now on");
             gpio_set_level(BLINK_GPIO, 1);
-        } else if (strcmp(data,"off") == 0) {
+        } else if (strncmp(buffer,"OOFF",3) == 0) {
             strcpy(msg, "LED is now off");
             gpio_set_level(BLINK_GPIO, 0);
         }else {
@@ -134,7 +151,7 @@ void app_main()
 
     nvs_flash_init();
     tcpip_adapter_init();
-    //int level = 0;
+    int level = 0;
     ESP_ERROR_CHECK( esp_event_loop_init(event_handler, NULL) );
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK( esp_wifi_init(&cfg) );
